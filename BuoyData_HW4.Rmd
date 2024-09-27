@@ -5,35 +5,185 @@ date: "2024-09-25"
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-
-file_root<-"https://www.ndbc.noaa.gov/view_text_file.php?filename=44013h"
-year<-"2023"
-tail<- ".txt.gz&dir=data/historical/stdmet/"
-path<-paste0(file_root,year,tail)
-header=scan(path,what= 'character',nlines=1)
-buoy<-fread(path,header=FALSE,skip=2)
-colnames(buoy)<-header
+library(data.table)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(zoo)
+library(tibble)
+library(outliers)
 ```
 
 
 
-## R Markdown
+## Part a.
 
 This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
 
 When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
 
-```{r cars}
-summary(cars)
+
+```{r}
+get_url <- function(year) {
+  paste0("https://www.ndbc.noaa.gov/view_text_file.php?filename=44013h", year, ".txt.gz&dir=data/historical/stdmet/")
+}
+
+#=======================================================
+#INITIATE DATAFRAME WITH 1985 DATA
+year1<-"1985"
+buoy<-read.table(get_url(year1), header = TRUE, sep = "", na.strings = "MM", fill = TRUE)
+
+header=scan(get_url(year1),what= 'character',nlines=1)
+colnames(buoy)<-header
+buoy = buoy %>%
+  add_column(mm = NA, .after = "hh") %>%
+  add_column(TIDE = NA, .after = "VIS")
+#========================================================
+#HANDLE YEARS 1986-2006
+years <- 1986:2006
+for (i in years) {
+  url <- get_url(i)
+  temp_data <- read.table(get_url(i), header = TRUE, sep = "",fill = TRUE)
+  temp_data = temp_data %>%
+    add_column(mm = NA, .after = "hh") %>%
+    add_column(TIDE = NA, .after = "VIS")
+  buoy <- bind_rows(buoy, temp_data)
+}
+buoy$YY<-na.omit(c(buoy$YY, buoy$YYYY))
+buoy <- buoy %>%
+  select(-YYYY, -TIDE.1, -mm.1)
+colnames(buoy)[colnames(buoy) == "YY"] <- "YYYY"
+#=========================================================
+#HANDLE YEARS 2007-2023
+years<-2007:2023
+for (i in years) {
+  url <- get_url(i)
+  temp_data <- (read.table(get_url(i), header = FALSE, sep = "",fill = TRUE, skip=1))
+  header=scan(get_url(i),what= 'character',nlines=1)
+  colnames(temp_data)<-header
+  buoy <- bind_rows(buoy, temp_data)
+}
+
+buoy$YYYY<-na.omit(c(buoy$YYYY, buoy$`#YY`))
+buoy$BAR<-na.omit(c(buoy$BAR, buoy$PRES))
+buoy <- buoy %>%
+  select(-`#YY`, -PRES)
+
+buoy$WD<-na.omit(c(buoy$WD, buoy$WDIR))
+buoy <- buoy %>%
+  select(-WDIR)
 ```
 
-## Including Plots
+## Part B.
+```{r}
+# Convert placeholder values (e.g., 999) to NA, only if columns exist
+columns_to_check <- c("WDIR", "PRES", "ATMP", "WTMP")
+
+# Filter only the columns that exist in the current dataset
+available_columns <- intersect(columns_to_check, colnames(buoy))
+
+# Apply mutate only on the existing columns
+if(length(available_columns) > 0) {
+  buoy <- buoy %>%
+    mutate(across(all_of(available_columns), ~ na_if(., 999)))
+}
+
+# Summary of NA values
+na_summary <- buoy %>%
+  summarise(across(everything(), ~ sum(is.na(.))))
+
+print(na_summary)
+
+# Analyze patterns in missing data (e.g., by year or month)
+na_pattern <- buoy %>%
+  group_by(YYYY, MM) %>%
+  summarise(across(all_of(available_columns), ~ sum(is.na(.))))
+  
+print(na_pattern)
+
+```
+
+## Part C.
 
 You can also embed plots, for example:
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r}
+# Load ggplot2 for visualization
+library(ggplot2)
+
+# Create a line plot for air temperature over time
+ggplot(buoy, aes(x = as.Date(paste(YYYY, MM, DD, sep = "-")), y = ATMP)) +
+  geom_line() +
+  labs(title = "Air Temperature Over Time",
+       x = "Date", y = "Air Temperature (°C)") +
+  theme_minimal()
+
+# Create a line plot for water temperature over time
+ggplot(buoy, aes(x = as.Date(paste(YYYY, MM, DD, sep = "-")), y = WTMP)) +
+  geom_line() +
+  labs(title = "Water Temperature Over Time",
+       x = "Date", y = "Water Temperature (°C)") +
+  theme_minimal()
+
+# Calculate yearly average temperature
+yearly_temp <- buoy %>%
+  group_by(YYYY) %>%
+  summarise(mean_ATMP = mean(ATMP, na.rm=TRUE),
+            mean_WTMP = mean(WTMP, na.rm=TRUE))
+
+# Plot the yearly average temperature
+ggplot(yearly_temp, aes(x = YYYY, y = mean_ATMP)) +
+  geom_line() +
+  labs(title = "Average Yearly Air Temperature",
+       x = "Year", y = "Mean Air Temperature (°C)") +
+  geom_smooth(method = "lm")
+
+# Linear regression for climate change trend
+model <- lm(mean_ATMP ~ YYYY, data = yearly_temp)
+summary(model)
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## Part D. 
+```{r}
+# Load necessary libraries
+library(dplyr)
+library(lubridate)
+
+# Load the rainfall data
+rainfall <- read.csv("Rainfall.csv")
+
+# Extract year, month, and day from DATE column
+rainfall <- rainfall %>%
+  mutate(YYYY = year(ymd(DATE)),
+         MM = month(ymd(DATE)),
+         DD = day(ymd(DATE)))
+
+# Check the structure of the new rainfall data
+str(rainfall)
+
+```
+```{r}
+# Check the column names in both datasets
+colnames(buoy)
+colnames(rainfall)
+
+```
+```{r}
+# Perform the inner join on YYYY, MM, and DD
+combined_data <- inner_join(buoy, rainfall, by = c("YYYY", "MM", "DD"))
+
+# Check the structure of the combined dataset
+str(combined_data)
+
+```
+```{r}
+# Visualize the relationship between air temperature and rainfall
+ggplot(combined_data, aes(x = 'ATMP', y = 'HPCP')) +
+  geom_point() +
+  labs(title = "Rainfall vs. Air Temperature",
+       x = "Air Temperature (°C)", y = "Rainfall (mm)") +
+  theme_minimal()
+
+
+```
+
